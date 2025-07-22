@@ -13,12 +13,13 @@ from openpyxl.styles import NamedStyle
 from openpyxl.styles import Font
 from datetime import datetime
 import time
+import msal
 
 app = Flask(__name__)
 
 # Clio API credentials
-CLIENT_ID = 'oBBd4H9tViK47Ax4YSizrb0BRQCUt9F6qv0fV6yK'
-CLIENT_SECRET = 'VkDQNHjZO4hcDopUjTIgJNuJawA8WayqZO4nU2vk'
+CLIENT_ID = os.getenv("CLIO_CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIO_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("CLIO_REDIRECT_URI")
 
 # OneDrive local folder path for Reports
@@ -840,6 +841,7 @@ def fetch_and_process_data():
     final_path = os.path.join(ONEDRIVE_REPORTS_FOLDER_PATH, output_file)
     os.rename(output_file, final_path)
     print(f"\nFile has been saved to: {final_path}")
+    upload_to_sharepoint(final_path, output_file)
 
 if __name__ == '__main__':
     try:
