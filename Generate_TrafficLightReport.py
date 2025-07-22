@@ -525,8 +525,8 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
 
     # Format date range for column header
     if cycle_start_date is None or cycle_end_date is None:
-        billing_cycle_start = "06/04/25"  # Default previous cycle start
-        billing_cycle_end = "06/17/25"    # Default previous cycle end
+        billing_cycle_start = "07/11/25"  # Default previous cycle start
+        billing_cycle_end = "07/12/25"    # Default previous cycle end
     else:
         billing_cycle_start = cycle_start_date
         billing_cycle_end = cycle_end_date
@@ -785,12 +785,12 @@ def upload_to_sharepoint(file_path, file_name):
     
 def fetch_and_process_data():
     # Previous billing cycle dates
-    previous_cycle_start = "2025-06-04T00:00:00-08:00"
-    previous_cycle_end = "2025-06-17T23:59:59-08:00"
+    previous_cycle_start = "2025-07-11T00:00:00-08:00"
+    previous_cycle_end = "2025-7-12T23:59:59-08:00"
 
     # Mid cycle dates
-    mid_cycle_start = "2025-06-04T00:00:00-08:00"
-    mid_cycle_end = "2025-06-17T23:59:59-08:00"
+    mid_cycle_start = "2025-07-11T00:00:00-08:00"
+    mid_cycle_end = "2025-07-12T23:59:59-08:00"
 
     # Current cycle to date (starting from mid cycle start)
     current_cycle_start = mid_cycle_start  # Same as mid cycle start
@@ -808,11 +808,11 @@ def fetch_and_process_data():
     # Create reports for both cycles
     previous_cycle_df = merge_dataframes(matter_trusts_df, outstanding_balances_df, 
                                        work_progress_df, previous_cycle_data,
-                                       "06/04/25", "06/17/25")
+                                       "07/11/25", "07/12/25")
     
     mid_cycle_df = merge_dataframes(matter_trusts_df, outstanding_balances_df, 
                                   work_progress_df, mid_cycle_data,
-                                  "06/04/25", "06/17/25")
+                                  "07/11/25", "07/12/25")
     
     # Save the report
     current_date_str = datetime.now().strftime("%Y-%m-%d %I%p").lstrip('0').replace('.0', '.')
@@ -824,8 +824,8 @@ def fetch_and_process_data():
         mid_cycle_df, 
         mid_cycle_data,
         current_cycle_data,
-        "05/16/25",  # mid_cycle_start_formatted
-        "06/03/25",  # mid_cycle_end_formatted
+        "07/11/25",  # mid_cycle_start_formatted
+        "07/12/25",  # mid_cycle_end_formatted
         current_date.strftime("%m/%d/%y"),  # current_date_formatted
         output_file
     )
