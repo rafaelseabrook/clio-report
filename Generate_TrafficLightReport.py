@@ -770,8 +770,9 @@ def upload_to_sharepoint(file_path, file_name):
         "Content-Type": "application/json"
     }
 
-    current_month = datetime.now().strftime("%m %B %Y")
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_month}"
+    current_year = datetime.now().strftime("%Y")       # e.g. "2025"
+    current_month = datetime.now().strftime("%B")      # e.g. "July"
+    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_year}/{current_month}"
 
     # Ensure the folder exists or create it
     folder_check = requests.get(base_url, headers=headers)
