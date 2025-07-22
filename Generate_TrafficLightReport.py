@@ -22,9 +22,6 @@ CLIENT_ID = os.getenv("CLIO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIO_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("CLIO_REDIRECT_URI")
 
-# OneDrive local folder path for Reports
-ONEDRIVE_REPORTS_FOLDER_PATH = r'C:\Users\Rafael\OneDrive - Seabrook Law Offices\Desktop'
-
 # Token storage file
 TOKEN_FILE = 'clio_tokens.json'
 
@@ -835,12 +832,14 @@ def fetch_and_process_data():
         current_date.strftime("%m/%d/%y"),  # current_date_formatted
         output_file
     )
-    
-    # Move to OneDrive folder
-    final_path = os.path.join(ONEDRIVE_REPORTS_FOLDER_PATH, output_file)
-    os.rename(output_file, final_path)
-    print(f"\nFile has been saved to: {final_path}")
-    upload_to_sharepoint(final_path, output_file)
+    print(f"\nUploading {output_file} to SharePoint...")
+    upload_to_sharepoint(output_file, output_file)
+
+    # Optional: delete the file after upload
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        print(f"{output_file} deleted from local storage.")
+
 
 if __name__ == '__main__':
     try:
