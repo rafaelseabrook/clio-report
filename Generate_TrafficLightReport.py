@@ -749,6 +749,45 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
     
     wb.save(output_file)
     print(f"File saved: {output_file}")
+
+def upload_to_sharepoint(file_path, file_name):
+    TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
+    CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
+    SITE_ID = os.getenv("SHAREPOINT_SITE_ID")
+    DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID")
+    LIBRARY_PATH = os.getenv("SHAREPOINT_DOC_LIB")
+
+    authority = f"https://login.microsoftonline.com/{TENANT_ID}"
+    scopes = ["https://graph.microsoft.com/.default"]
+    app = msal.ConfidentialClientApplication(
+        CLIENT_ID, authority=authority,
+        client_credential=CLIENT_SECRET
+    )
+    result = app.acquire_token_for_client(scopes=scopes)
+    if "access_token" not in result:
+        raise Exception(f"Graph auth failed: {result.get('error_description')}")
+
+    headers = {
+        "Authorization": f"Bearer {result['access_token']}",
+        "Content-Type": "application/json"
+    }
+
+    current_month = datetime.now().strftime("%m %B %Y")
+    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_month}"
+
+    # Ensure the folder exists or create it
+    folder_check = requests.get(base_url, headers=headers)
+    if folder_check.status_code == 404:
+        create_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_month}:/children"
+        requests.post(create_url, headers=headers, json={"name": current_month, "folder": {}, "@microsoft.graph.conflictBehavior": "replace"})
+
+    upload_url = f"{base_url}/{file_name}:/content"
+    with open(file_path, "rb") as f:
+        upload_response = requests.put(upload_url, headers={"Authorization": f"Bearer {result['access_token']}"}, data=f)
+    if upload_response.status_code not in [200, 201]:
+        raise Exception(f"Upload failed: {upload_response.status_code} - {upload_response.text}")
+    print(f"Uploaded {file_name} to SharePoint.")
     
 def fetch_and_process_data():
     # Previous billing cycle dates
