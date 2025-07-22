@@ -506,13 +506,19 @@ def process_data():
             'Unbilled Hours': matter.get('unbilled_hours', 0)
         }
         for matter in work_progress
+        if isinstance(matter, dict)
     ]
 
     matter_trusts_df = pd.DataFrame(matter_trusts_data)
     outstanding_balances_df = pd.DataFrame(outstanding_balances_data)
-    work_progress_df = pd.DataFrame(work_progress_data)
+
+    if not work_progress_data:
+        work_progress_df = pd.DataFrame(columns=['Client Name', 'Unbilled Amount', 'Unbilled Hours'])
+    else:
+        work_progress_df = pd.DataFrame(work_progress_data)
 
     return matter_trusts_df, outstanding_balances_df, work_progress_df
+
 
 def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df, billing_cycle_data, cycle_start_date=None, cycle_end_date=None):
     print("Merging dataframes...")
