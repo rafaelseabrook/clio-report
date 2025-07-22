@@ -30,39 +30,32 @@ TOKEN_FILE = 'clio_tokens.json'
 
 API_VERSION = '4'
 
-def save_tokens(tokens):
-    with open(TOKEN_FILE, 'w') as file:
-        json.dump(tokens, file)
-    print("Tokens saved successfully.")
+def save_tokens_env(tokens):
+    os.environ["CLIO_ACCESS_TOKEN"] = tokens['access_token']
+    os.environ["CLIO_REFRESH_TOKEN"] = tokens['refresh_token']
+    os.environ["CLIO_EXPIRES_IN"] = str(tokens['expires_in'])
 
-def load_tokens():
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'r') as file:
-            try:
-                tokens = json.load(file)
-                print("Tokens loaded successfully.")
-                return tokens
-            except json.JSONDecodeError:
-                print("Failed to load tokens: Invalid JSON format.")
-                return None
-    print("No token file found.")
+def load_tokens_env():
+    access_token = os.getenv("CLIO_ACCESS_TOKEN")
+    refresh_token = os.getenv("CLIO_REFRESH_TOKEN")
+    expires_in = os.getenv("CLIO_EXPIRES_IN")
+    if access_token and refresh_token and expires_in:
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": float(expires_in)
+        }
     return None
 
 def get_access_token():
-    tokens = load_tokens()
+    tokens = load_tokens_env()
     if tokens:
-        expires_in = datetime.fromtimestamp(tokens['expires_in'])
-        if datetime.now() < expires_in:
+        if datetime.now().timestamp() < tokens['expires_in']:
             return tokens['access_token']
         else:
             return refresh_access_token(tokens['refresh_token'])
     else:
-        # Start OAuth flow if no tokens are found
-        auth_url = f"https://app.clio.com/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
-        webbrowser.open(auth_url)
-        app_thread = threading.Thread(target=app.run, kwargs={'port': 8000})
-        app_thread.start()
-        app_thread.join()
+        print("No tokens found. Run the script locally to authorize.")
         return None
 
 def refresh_access_token(refresh_token):
@@ -76,7 +69,7 @@ def refresh_access_token(refresh_token):
     if response.status_code == 200:
         tokens = response.json()
         tokens['expires_in'] = datetime.now().timestamp() + tokens['expires_in']
-        save_tokens(tokens)
+        save_tokens_env(tokens)
         return tokens['access_token']
     else:
         print(f"Failed to refresh access token: {response.status_code}, {response.text}")
