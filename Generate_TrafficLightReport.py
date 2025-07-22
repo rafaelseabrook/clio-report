@@ -19,7 +19,7 @@ app = Flask(__name__)
 # Clio API credentials
 CLIENT_ID = 'oBBd4H9tViK47Ax4YSizrb0BRQCUt9F6qv0fV6yK'
 CLIENT_SECRET = 'VkDQNHjZO4hcDopUjTIgJNuJawA8WayqZO4nU2vk'
-REDIRECT_URI = 'http://127.0.0.1:8000/callback'
+REDIRECT_URI = os.getenv("CLIO_REDIRECT_URI")
 
 # OneDrive local folder path for Reports
 ONEDRIVE_REPORTS_FOLDER_PATH = r'C:\Users\Rafael\OneDrive - Seabrook Law Offices\Desktop'
