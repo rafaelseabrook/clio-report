@@ -753,7 +753,7 @@ def upload_to_sharepoint(file_path, file_name):
     CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
     SITE_ID = os.getenv("SHAREPOINT_SITE_ID")
     DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID")
-    LIBRARY_PATH = os.getenv("SHAREPOINT_DOC_LIB")
+    LIBRARY_PATH = os.getenv("SHAREPOINT_DOC_LIB").strip('"')
 
     authority = f"https://login.microsoftonline.com/{TENANT_ID}"
     scopes = ["https://graph.microsoft.com/.default"]
@@ -770,26 +770,36 @@ def upload_to_sharepoint(file_path, file_name):
         "Content-Type": "application/json"
     }
 
-    current_year = datetime.now().strftime("%Y")       # e.g. "2025"
-    current_month = datetime.now().strftime("%B")      # e.g. "July"
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{LIBRARY_PATH}/{current_year}/{current_month}"
+    current_year = datetime.now().strftime("%Y")
+    current_month = datetime.now().strftime("%B")
+    folder_path = f"{LIBRARY_PATH}/{current_year}/{current_month}"
 
-    folder_check = requests.get(base_url, headers=headers)
-    if folder_check.status_code == 404:
-        create_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{LIBRARY_PATH}/{current_year}/{current_month}:/children"
-        requests.post(create_url, headers=headers, json={
-            "name": current_month,
-            "folder": {},
-            "@microsoft.graph.conflictBehavior": "replace"
-        })
+    ensure_folder(folder_path, headers, SITE_ID, DRIVE_ID)
 
-    upload_url = f"{base_url}/{file_name}:/content"
+    upload_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{folder_path}/{file_name}:/content"
 
     with open(file_path, "rb") as f:
         upload_response = requests.put(upload_url, headers={"Authorization": f"Bearer {result['access_token']}"}, data=f)
     if upload_response.status_code not in [200, 201]:
         raise Exception(f"Upload failed: {upload_response.status_code} - {upload_response.text}")
-    print(f"Uploaded {file_name} to SharePoint.")
+    print(f"Uploaded {file_name} to SharePoint at {folder_path}/")
+
+def ensure_folder(path, headers, site_id, drive_id):
+    segments = path.strip("/").split("/")
+    parent_path = ""
+    for segment in segments:
+        full_path = f"{parent_path}/{segment}" if parent_path else segment
+        url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{full_path}"
+        res = requests.get(url, headers=headers)
+        if res.status_code == 404:
+            create_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{parent_path or ''}:/children"
+            create_res = requests.post(create_url, headers=headers, json={
+                "name": segment,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "replace"
+            })
+            create_res.raise_for_status()
+        parent_path = full_path
     
 def fetch_and_process_data():
     # Previous billing cycle dates
