@@ -772,15 +772,19 @@ def upload_to_sharepoint(file_path, file_name):
 
     current_year = datetime.now().strftime("%Y")       # e.g. "2025"
     current_month = datetime.now().strftime("%B")      # e.g. "July"
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_year}/{current_month}"
+    base_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{LIBRARY_PATH}/{current_year}/{current_month}"
 
-    # Ensure the folder exists or create it
     folder_check = requests.get(base_url, headers=headers)
     if folder_check.status_code == 404:
-        create_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/General Management/Traffic Light Reports/{current_month}:/children"
-        requests.post(create_url, headers=headers, json={"name": current_month, "folder": {}, "@microsoft.graph.conflictBehavior": "replace"})
+        create_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{LIBRARY_PATH}/{current_year}/{current_month}:/children"
+        requests.post(create_url, headers=headers, json={
+            "name": current_month,
+            "folder": {},
+            "@microsoft.graph.conflictBehavior": "replace"
+        })
 
     upload_url = f"{base_url}/{file_name}:/content"
+
     with open(file_path, "rb") as f:
         upload_response = requests.put(upload_url, headers={"Authorization": f"Bearer {result['access_token']}"}, data=f)
     if upload_response.status_code not in [200, 201]:
