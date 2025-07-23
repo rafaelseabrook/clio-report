@@ -803,11 +803,18 @@ def ensure_folder(path, headers, site_id, drive_id):
         res = requests.get(url, headers=headers)
         if res.status_code == 404:
             # Use full_path or parent_path in create URL
-            create_parent = parent_path if parent_path else ""
-            create_url = (
-                f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/"
-                f"{drive_id}/root:/{create_parent}:/children"
-            )
+            
+            if parent_path:
+                create_url = (
+                    f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/"
+                    f"{drive_id}/root:/{parent_path}:/children"
+                )
+            else:
+                create_url = (
+                    f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/"
+                    f"{drive_id}/root/children"
+                )
+
             create_res = requests.post(create_url, headers=headers, json={
                 "name": segment,
                 "folder": {},
