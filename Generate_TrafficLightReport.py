@@ -12,6 +12,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.styles import NamedStyle
 from openpyxl.styles import Font
 from datetime import datetime
+from urllib.parse import quote
 import time
 import msal
 
@@ -774,15 +775,21 @@ def upload_to_sharepoint(file_path, file_name):
     current_month = datetime.now().strftime("%B")
     folder_path = f"{LIBRARY_PATH}/{current_year}/{current_month}"
 
+    # Ensure folder exists first
     ensure_folder(folder_path, headers, SITE_ID, DRIVE_ID)
 
-    upload_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{folder_path}/{file_name}:/content"
+    # 🔥 This is the critical fix — properly encode the full path
+    encoded_path = quote(f"{folder_path}/{file_name}")
+
+    upload_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{encoded_path}:/content"
 
     with open(file_path, "rb") as f:
         upload_response = requests.put(upload_url, headers={"Authorization": f"Bearer {result['access_token']}"}, data=f)
+
     if upload_response.status_code not in [200, 201]:
         raise Exception(f"Upload failed: {upload_response.status_code} - {upload_response.text}")
-    print(f"Uploaded {file_name} to SharePoint at {folder_path}/")
+
+    print(f"✅ Uploaded {file_name} to SharePoint at {folder_path}/")
 
 def ensure_folder(path, headers, site_id, drive_id):
     segments = path.strip("/").split("/")
