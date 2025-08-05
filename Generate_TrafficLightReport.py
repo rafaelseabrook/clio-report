@@ -529,8 +529,8 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
 
     # Format date range for column header
     if cycle_start_date is None or cycle_end_date is None:
-        billing_cycle_start = "07/16/25"  # Default previous cycle start
-        billing_cycle_end = "07/29/25"    # Default previous cycle end
+        billing_cycle_start = "07/16/25"  # Change1 Default previous cycle start
+        billing_cycle_end = "07/29/25"    # Change2 Default previous cycle end
     else:
         billing_cycle_start = cycle_start_date
         billing_cycle_end = cycle_end_date
@@ -824,11 +824,11 @@ def ensure_folder(path, headers, site_id, drive_id):
         parent_path = full_path
     
 def fetch_and_process_data():
-    # Previous billing cycle dates
+    # Change3 Previous billing cycle dates
     previous_cycle_start = "2025-07-16T00:00:00-08:00"
     previous_cycle_end = "2025-7-29T23:59:59-08:00"
 
-    # Mid cycle dates
+    # Change4 Mid cycle dates
     mid_cycle_start = "2025-07-30T00:00:00-08:00"
     mid_cycle_end = "2025-08-12T23:59:59-08:00"
 
@@ -845,11 +845,11 @@ def fetch_and_process_data():
     # Process main data
     matter_trusts_df, outstanding_balances_df, work_progress_df = process_data()
     
-    # Create reports for both cycles
+    # Change5 Create reports for both cycles
     previous_cycle_df = merge_dataframes(matter_trusts_df, outstanding_balances_df, 
                                        work_progress_df, previous_cycle_data,
                                        "07/16/25", "07/29/25")
-    
+    # Change6 
     mid_cycle_df = merge_dataframes(matter_trusts_df, outstanding_balances_df, 
                                   work_progress_df, mid_cycle_data,
                                   "07/29/25", "08/12/25")
@@ -864,8 +864,8 @@ def fetch_and_process_data():
         mid_cycle_df, 
         mid_cycle_data,
         current_cycle_data,
-        "07/29/25",  # mid_cycle_start_formatted
-        "08/12/25",  # mid_cycle_end_formatted
+        "07/29/25",  # Change7 mid_cycle_start_formatted
+        "08/12/25",  # Change8 mid_cycle_end_formatted
         current_date.strftime("%m/%d/%y"),  # current_date_formatted
         output_file
     )
