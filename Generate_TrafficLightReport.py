@@ -864,8 +864,8 @@ def fetch_and_process_data():
         mid_cycle_df, 
         mid_cycle_data,
         current_cycle_data,
-        "07/29/25",  # Change7 mid_cycle_start_formatted
-        "08/12/25",  # Change8 mid_cycle_end_formatted
+        "07/29/25",  # Change7 current_cycle_start_formatted
+        "08/12/25",  # Change8 current_cycle_end_formatted
         current_date.strftime("%m/%d/%y"),  # current_date_formatted
         output_file
     )
