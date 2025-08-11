@@ -380,17 +380,19 @@ def make_report_df(matter_df: pd.DataFrame,
         combined[cf_name] = combined["_cf_map"].map(lambda d: (d or {}).get(cf_name, ""))
 
     # Select / order columns (match your sheet; include per-user columns right after total)
+    # Select / order columns (match your sheet; put RA/Paralegals/Notes before per-user columns)
     base_cols = [
         "Matter Number","Client Name","CR ID","Net Trust Account Balance","Matter Stage",
-        col_total,  # total cycle hours first
-        # per-user cycle hour columns will be appended in order below:
+        # << move these five up BEFORE the per-user cycle hour columns >>
+        "Responsible Attorney","Main Paralegal","Supporting Attorney","Supporting Paralegal","Client Notes",
+        # keep the TOTAL cycle hours next
+        col_total,
     ]
-    # Insert the per-user columns (in the same order we built them)
+    # then append the per-user cycle hour columns
     per_user_cols = [f"{u} Cycle Hours ({cycle_start_label} - {cycle_end_label})" for u in users]
     base_cols += per_user_cols
-    # then the rest of your usual columns
+    # followed by the rest
     base_cols += [
-        "Responsible Attorney","Main Paralegal","Supporting Attorney","Supporting Paralegal","Client Notes",
         "Initial Client Goals","Initial Strategy","Has strategy changed Describe","Current action Items",
         "Hearings","Deadlines","DV situation description","Custody Visitation","CS Add ons Extracurricular",
         "Spousal Support","PDDs","Discovery","Judgment Trial","Post Judgment","collection efforts",
