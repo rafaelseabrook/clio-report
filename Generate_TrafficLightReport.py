@@ -24,7 +24,7 @@ app = Flask(__name__)
 CLIO_BASE = os.getenv("CLIO_BASE", "https://app.clio.com")
 API_VERSION = "4"
 CLIO_API = f"{CLIO_BASE}/api/v{API_VERSION}"
-CLIO_TOKEN_URL = f"{CLIO_BASE}/oauth/token"
+CLIO_TOKEN_URL = f"{CLIO_BASE}/oauth/token}"
 
 # Clio OAuth (tokens are expected to be pre-seeded in env on Render)
 CLIENT_ID = os.getenv("CLIO_CLIENT_ID")
@@ -188,9 +188,11 @@ def fetch_data(url, params):
         if resp.status_code == 200:
             body = resp.json() or {}
             data = body.get("data", []) or []
-            # dedupe repeated pages (Clio sometimes loops)
-            ids = [item.get('id') for item in data if isinstance(item, dict) and item.get('id') is not None]
-            page_id = tuple(sorted(ids)) if ids else (page,)  # fallback when items don't have ids
+
+            # Build a page fingerprint; if items don't include id, fall back to page number
+            ids = [d.get("id") for d in data if isinstance(d, dict) and d.get("id") is not None]
+            page_id = tuple(sorted(ids)) if ids else (page,)
+
             if page_id in seen_pages:
                 print(f"Repeating page detected at page {page}. Breaking loop.")
                 break
@@ -202,7 +204,6 @@ def fetch_data(url, params):
             page += 1
 
         elif resp.status_code == 429:
-            # already handled in _request, but be safe
             time.sleep(30)
             continue
         else:
@@ -241,12 +242,13 @@ def fetch_work_progress():
     while True:
         url = f"{CLIO_API}/billable_matters.json"
         params = {
-            'fields': 'id,unbilled_amount,unbilled_hours,client{id,name}',  # include id to stabilize pagination
+            'fields': 'id,unbilled_amount,unbilled_hours,client{id,name}',  # include id so paging is reliable
             'limit': 200,
             'page': page
         }
         batch, _ = fetch_data(url, params)
-        ids = [item.get('id') for item in batch if isinstance(item, dict) and item.get('id') is not None]
+
+        ids = [b.get("id") for b in batch if isinstance(b, dict) and b.get("id") is not None]
         page_id = tuple(sorted(ids)) if ids else (page,)
         if page_id in seen_pages:
             print(f"Duplicate or repeating data at page {page}, breaking loop.")
@@ -492,6 +494,15 @@ def normalize_name(name):
     else:
         return name.strip()
 
+def client_key(name: str) -> str:
+    """Stable key to join client-level AR/WIP to matter rows, tolerating minor punctuation/spaces."""
+    n = normalize_name(name)
+    if not isinstance(n, str):
+        return "na"
+    n = re.sub(r"\s+", " ", n).strip().lower()
+    n = re.sub(r"[^a-z0-9 ]+", "", n)  # drop punctuation
+    return n or "na"
+
 # =========================
 # Build dataframes (match “working” logic)
 # =========================
@@ -522,10 +533,12 @@ def process_data():
         matter_stage = m.get('matter_stage')
         matter_stage_name = matter_stage.get('name', 'N/A') if isinstance(matter_stage, dict) else 'N/A'
         client = m.get('client') or {}
+        client_name = normalize_name((client or {}).get('name', 'N/A'))
 
         matter_trusts_rows.append({
             'Matter Number': m.get('number') or m.get('display_number') or m.get('id'),
-            'Client Name': normalize_name((client or {}).get('name', 'N/A')),
+            'Client Name': client_name,
+            'Client Key': client_key(client_name),
             'Trust Account Balance': total_balance_amount,
             'Responsible Attorney': (m.get('responsible_attorney') or {}).get('name', 'N/A'),
             'Status': m.get('status', 'N/A'),
@@ -533,21 +546,33 @@ def process_data():
         })
 
     # Outstanding by client (contact-level)
-    outstanding_rows = [{
-        'Client Name': normalize_name((b.get('contact') or {}).get('name', 'N/A')),
-        'Outstanding Balance': b.get('total_outstanding_balance', 0) or 0
-    } for b in outstanding_balances if isinstance(b, dict)]
+    outstanding_rows = []
+    for b in outstanding_balances:
+        if not isinstance(b, dict):
+            continue
+        nm = normalize_name((b.get('contact') or {}).get('name', 'N/A'))
+        outstanding_rows.append({
+            'Client Name': nm,
+            'Client Key': client_key(nm),
+            'Outstanding Balance': b.get('total_outstanding_balance', 0) or 0
+        })
 
     # Unbilled by client
-    work_rows = [{
-        'Client Name': normalize_name(((w.get('client') or {}).get('name', 'N/A'))),
-        'Unbilled Amount': w.get('unbilled_amount', 0) or 0,
-        'Unbilled Hours': w.get('unbilled_hours', 0) or 0
-    } for w in work_progress if isinstance(w, dict)]
+    work_rows = []
+    for w in work_progress:
+        if not isinstance(w, dict):
+            continue
+        nm = normalize_name(((w.get('client') or {}).get('name', 'N/A')))
+        work_rows.append({
+            'Client Name': nm,
+            'Client Key': client_key(nm),
+            'Unbilled Amount': w.get('unbilled_amount', 0) or 0,
+            'Unbilled Hours': w.get('unbilled_hours', 0) or 0
+        })
 
-    mt_cols = ['Matter Number', 'Client Name', 'Trust Account Balance', 'Responsible Attorney', 'Status', 'Matter Stage']
-    ocb_cols = ['Client Name', 'Outstanding Balance']
-    work_cols = ['Client Name', 'Unbilled Amount', 'Unbilled Hours']
+    mt_cols = ['Matter Number', 'Client Name', 'Client Key', 'Trust Account Balance', 'Responsible Attorney', 'Status', 'Matter Stage']
+    ocb_cols = ['Client Name', 'Client Key', 'Outstanding Balance']
+    work_cols = ['Client Name', 'Client Key', 'Unbilled Amount', 'Unbilled Hours']
 
     matter_trusts_df = pd.DataFrame(matter_trusts_rows, columns=mt_cols)
     outstanding_balances_df = pd.DataFrame(outstanding_rows, columns=ocb_cols)
@@ -560,25 +585,35 @@ def process_data():
     return matter_trusts_df, outstanding_balances_df, work_progress_df
 
 # =========================
-# Merge and compute (join by Client Name like your working script)
+# Merge and compute (join by Client Key for AR/WIP)
 # =========================
 def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df, billing_cycle_data, cycle_start_date=None, cycle_end_date=None):
     print("Merging dataframes...")
 
-    # Ensure 'Client Name' exists
+    # Ensure keys exist
     for df_name, df in [('matter_trusts_df', matter_trusts_df), ('outstanding_balances_df', outstanding_balances_df), ('work_progress_df', work_progress_df)]:
-        if 'Client Name' not in df.columns:
-            print(f"Missing 'Client Name' in {df_name}. Columns are: {df.columns.tolist()}")
-            df['Client Name'] = 'N/A'
+        if 'Client Key' not in df.columns:
+            print(f"Missing 'Client Key' in {df_name}. Columns are: {df.columns.tolist()}")
+            df['Client Key'] = df.get('Client Name', 'N/A').apply(client_key)
 
     # Billing window label
     billing_cycle_start = cycle_start_date or "07/16/25"
     billing_cycle_end = cycle_end_date or "07/29/25"
     billing_cycle_column = f"Billing Cycle Hours ({billing_cycle_start} - {billing_cycle_end})"
 
-    # Merge by Client Name (to carry client-level AR and unbilled)
-    combined_df = pd.merge(matter_trusts_df, outstanding_balances_df, on='Client Name', how='left')
-    combined_df = pd.merge(combined_df, work_progress_df, on='Client Name', how='left')
+    # Merge AR and WIP at the client level using Client Key, keep original Client Name column from matters
+    combined_df = pd.merge(
+        matter_trusts_df,
+        outstanding_balances_df[['Client Key', 'Outstanding Balance']],
+        on='Client Key',
+        how='left'
+    )
+    combined_df = pd.merge(
+        combined_df,
+        work_progress_df[['Client Key', 'Unbilled Amount', 'Unbilled Hours']],
+        on='Client Key',
+        how='left'
+    )
 
     # Merge custom fields by Matter Number (matter-level fields)
     try:
@@ -648,6 +683,11 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
     # Clean client name
     if 'Client Name' in combined_df.columns:
         combined_df['Client Name'] = combined_df['Client Name'].fillna('N/A')
+
+    # Return sorted, but do not include the helper key in output
+    if 'Client Key' in combined_df.columns and 'Client Key' not in final_columns:
+        # keep hidden (not exported)
+        pass
 
     return combined_df[final_columns].sort_values(by='Net Trust Account Balance', ascending=False)
 
