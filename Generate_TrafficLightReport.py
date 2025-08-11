@@ -189,7 +189,8 @@ def fetch_data(url, params):
             body = resp.json() or {}
             data = body.get("data", []) or []
             # dedupe repeated pages (Clio sometimes loops)
-            page_id = tuple(sorted(item.get('id') for item in data if isinstance(item, dict) and item.get('id') is not None))
+            ids = [item.get('id') for item in data if isinstance(item, dict) and item.get('id') is not None]
+            page_id = tuple(sorted(ids)) if ids else (page,)  # fallback when items don't have ids
             if page_id in seen_pages:
                 print(f"Repeating page detected at page {page}. Breaking loop.")
                 break
@@ -240,12 +241,13 @@ def fetch_work_progress():
     while True:
         url = f"{CLIO_API}/billable_matters.json"
         params = {
-            'fields': 'unbilled_amount,unbilled_hours,client{name}',
+            'fields': 'id,unbilled_amount,unbilled_hours,client{id,name}',  # include id to stabilize pagination
             'limit': 200,
             'page': page
         }
         batch, _ = fetch_data(url, params)
-        page_id = tuple(sorted(item.get('id') for item in batch if isinstance(item, dict) and item.get('id') is not None))
+        ids = [item.get('id') for item in batch if isinstance(item, dict) and item.get('id') is not None]
+        page_id = tuple(sorted(ids)) if ids else (page,)
         if page_id in seen_pages:
             print(f"Duplicate or repeating data at page {page}, breaking loop.")
             break
