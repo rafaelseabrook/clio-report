@@ -1,16 +1,13 @@
 import json
 import os
 import requests
-import webbrowser
 import threading
 import re
 from flask import Flask, request
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, NamedStyle, Font
 from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.styles import NamedStyle
-from openpyxl.styles import Font
 from datetime import datetime
 from urllib.parse import quote
 import time
@@ -26,34 +23,41 @@ API_VERSION = "4"
 CLIO_API = f"{CLIO_BASE}/api/v{API_VERSION}"
 CLIO_TOKEN_URL = f"{CLIO_BASE}/oauth/token"
 
-# Clio OAuth (tokens are expected to be pre-seeded in env on Render)
+# Clio OAuth (tokens are expected to be pre-seeded in env on Railway/Render)
 CLIENT_ID = os.getenv("CLIO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIO_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("CLIO_REDIRECT_URI")
 
-# Token storage (env-based for Render)
-def save_tokens_env(tokens):
-    os.environ["CLIO_ACCESS_TOKEN"] = tokens['access_token']
-    os.environ["CLIO_REFRESH_TOKEN"] = tokens['refresh_token']
-    os.environ["CLIO_EXPIRES_IN"] = str(tokens['expires_in'])
+# Timezone offset used in ISO timestamps (PDT default in summer)
+TIMEZONE_OFFSET = os.getenv("TZ_OFFSET", "-07:00")
 
-def load_tokens_env():
-    access_token = os.getenv("CLIO_ACCESS_TOKEN")
-    refresh_token = os.getenv("CLIO_REFRESH_TOKEN")
-    expires_in = os.getenv("CLIO_EXPIRES_IN")
-    if access_token and refresh_token and expires_in:
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_in": float(expires_in)
-        }
-    return None
-
-PAGE_LIMIT = 50  # Clio hard max
+# Clio paging and throttling
+PAGE_LIMIT = int(os.getenv("CLIO_PAGE_LIMIT", "200"))  # Clio v4 supports up to 200
 GLOBAL_MIN_SLEEP = float(os.getenv("CLIO_GLOBAL_MIN_SLEEP_SEC", "1.25"))
 
 session = requests.Session()
 session.headers.update({"Accept": "application/json"})
+
+# =========================
+# Token storage (env-based)
+# =========================
+def save_tokens_env(tokens):
+    os.environ["CLIO_ACCESS_TOKEN"] = tokens['access_token']
+    os.environ["CLIO_REFRESH_TOKEN"] = tokens['refresh_token']
+    # store absolute expiry timestamp for quick checks
+    os.environ["CLIO_EXPIRES_AT_EPOCH"] = str(datetime.now().timestamp() + float(tokens.get('expires_in', 0)))
+
+def load_tokens_env():
+    access_token = os.getenv("CLIO_ACCESS_TOKEN")
+    refresh_token = os.getenv("CLIO_REFRESH_TOKEN")
+    expires_at = os.getenv("CLIO_EXPIRES_AT_EPOCH")
+    if access_token and refresh_token and expires_at:
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": float(expires_at)
+        }
+    return None
 
 # =========================
 # Auth and Request Helpers
@@ -67,14 +71,13 @@ def ensure_auth_headers():
             raise RuntimeError("Authorization missing; cannot proceed.")
 
 def get_access_token():
-    tokens = load_tokens_env()
-    if tokens:
-        if datetime.now().timestamp() < tokens['expires_in']:
-            return tokens['access_token']
+    toks = load_tokens_env()
+    if toks:
+        if datetime.now().timestamp() < toks['expires_at']:
+            return toks['access_token']
         else:
-            return refresh_access_token(tokens['refresh_token'])
+            return refresh_access_token(toks['refresh_token'])
     else:
-        # On Render, we expect tokens to be pre-seeded.
         print("No tokens found in env. Run locally once to authorize and seed tokens.")
         return None
 
@@ -87,7 +90,6 @@ def refresh_access_token(refresh_token):
     }, timeout=45)
     if resp.status_code == 200:
         tokens = resp.json()
-        tokens['expires_in'] = datetime.now().timestamp() + tokens['expires_in']
         save_tokens_env(tokens)
         session.headers["Authorization"] = f"Bearer {tokens['access_token']}"
         return tokens['access_token']
@@ -97,7 +99,7 @@ def refresh_access_token(refresh_token):
 
 @app.route('/callback')
 def callback():
-    # Mostly unused on Render cron, but keep it intact
+    # Mostly unused on server cron, but kept for local auth
     auth_code = request.args.get('code')
     response = session.post(CLIO_TOKEN_URL, data={
         'grant_type': 'authorization_code',
@@ -108,9 +110,8 @@ def callback():
     }, timeout=45)
     if response.status_code == 200:
         tokens = response.json()
-        tokens['expires_in'] = datetime.now().timestamp() + tokens['expires_in']
-        # fix: save to env version
         save_tokens_env(tokens)
+        # kick off once after auth
         fetch_and_process_data()
         return 'Authorization complete. Data processing initiated.'
     else:
@@ -130,7 +131,7 @@ def _request(method, url, **kwargs) -> requests.Response:
     backoff = 1
     for _ in range(max_tries):
         t0 = time.time()
-        resp = session.request(method, url, timeout=45, **kwargs)
+        resp = session.request(method, url, timeout=60, **kwargs)
 
         if resp.status_code == 401:
             toks = load_tokens_env()
@@ -171,7 +172,7 @@ def _request(method, url, **kwargs) -> requests.Response:
     return resp
 
 # =========================
-# Generic fetch with paging (limit=50 + page_token)
+# Generic fetch with paging (limit + page_token)
 # =========================
 def fetch_data(url, params):
     params = dict(params or {})
@@ -205,40 +206,79 @@ def fetch_data(url, params):
             page_token = next_token
             continue
 
-        # fallback stopping condition on count
-        if len(rows) < PAGE_LIMIT or not next_token:
+        # fallback stopping condition
+        if len(rows) < params["limit"] or not next_token:
             break
 
     return all_rows, len(all_rows)
 
 # =========================
-# Clio fetchers (limit=50, include IDs)
+# Clio fetchers (matter-grain)
 # =========================
 def fetch_matters_with_balances():
+    """
+    Pull matters and their ledger balances. We'll keep **trust** only.
+    """
     url = f"{CLIO_API}/matters.json"
     params = {
-        'fields': 'id,number,display_number,description,client{id,name},responsible_attorney{name},status,matter_stage{name},account_balances{balance}',
+        'fields': 'id,number,display_number,description,client{id,name},responsible_attorney{name},status,matter_stage{name},account_balances{balance,account{name,type}}',
         'status': 'open,pending'
     }
     return fetch_data(url, params)[0]
 
-def fetch_outstanding_balances():
-    url = f"{CLIO_API}/outstanding_client_balances.json"
+def fetch_outstanding_by_matter():
+    """
+    Build outstanding A/R per matter by summing unpaid/partial bill balances.
+    """
+    url = f"{CLIO_API}/bills.json"
     params = {
-        'fields': 'contact{id,name},total_outstanding_balance'
+        'status': 'unpaid,partial',
+        'fields': 'id,balance,matter{id,number,display_number},client{id}',
     }
-    return fetch_data(url, params)[0]
+    bills, _ = fetch_data(url, params)
+    by_matter = {}
+    for b in bills:
+        matter = (b.get('matter') or {})
+        mnum = matter.get('number') or matter.get('display_number') or matter.get('id')
+        if not mnum:
+            continue
+        try:
+            bal = float(b.get('balance') or 0)
+        except Exception:
+            bal = 0.0
+        by_matter[mnum] = by_matter.get(mnum, 0.0) + bal
+
+    rows = [{'Matter Number': m, 'Outstanding Balance': amt} for m, amt in by_matter.items()]
+    return pd.DataFrame(rows, columns=['Matter Number','Outstanding Balance'])
 
 def fetch_work_progress():
+    """
+    Pull unbilled amount/hours per **matter** (not per client).
+    """
     url = f"{CLIO_API}/billable_matters.json"
     params = {
-        'fields': 'unbilled_amount,unbilled_hours,client{id,name}'
+        'fields': 'unbilled_amount,unbilled_hours,client{id,name},matter{id,number,display_number}',
     }
     matters, _ = fetch_data(url, params)
-    print(f"Fetched {len(matters)} billable matters.")
-    return matters
+    rows = []
+    for w in matters:
+        matter = (w.get('matter') or {})
+        mnum = matter.get('number') or matter.get('display_number') or matter.get('id')
+        if not mnum:
+            continue
+        rows.append({
+            'Matter Number': mnum,
+            'Client ID': (w.get('client') or {}).get('id'),
+            'Client Name': normalize_name((w.get('client') or {}).get('name', 'N/A')),
+            'Unbilled Amount': w.get('unbilled_amount', 0) or 0,
+            'Unbilled Hours': w.get('unbilled_hours', 0) or 0
+        })
+    return pd.DataFrame(rows, columns=['Matter Number','Client ID','Client Name','Unbilled Amount','Unbilled Hours'])
 
 def fetch_billable_hours(start_date, end_date):
+    """
+    Aggregate billable time **per matter** and per user for a window.
+    """
     url = f"{CLIO_API}/activities.json"
     params = {
         'start_date': start_date,
@@ -273,7 +313,7 @@ def fetch_billable_hours(start_date, end_date):
                 continue
 
             matter = entry.get('matter') or {}
-            matter_number = matter.get('number') or matter.get('display_number')
+            matter_number = matter.get('number') or matter.get('display_number') or matter.get('id')
             if not matter_number:
                 continue
 
@@ -285,7 +325,6 @@ def fetch_billable_hours(start_date, end_date):
                 hours = 0.0
 
             user_name = (entry.get('user') or {}).get('name', 'Unknown User')
-            print(f"Debug: Processing time entry for matter {matter_number}, user {user_name}, hours {hours}")
 
             bucket = matter_totals.setdefault(matter_number, {'total_hours': 0.0, 'user_hours': {}})
             bucket['total_hours'] += hours
@@ -294,17 +333,12 @@ def fetch_billable_hours(start_date, end_date):
         if not page_token or len(rows) < PAGE_LIMIT:
             break
 
-    print(f"Debug: Total matters with billable hours: {len(matter_totals)}")
-    for matter_number, d in list(matter_totals.items())[:3]:
-        print(f"Matter {matter_number}: {d}")
-
     return matter_totals
 
 # =========================
-# Custom Fields (returns Client ID too)
+# Custom Fields (unchanged; returns Client ID too)
 # =========================
 def fetch_custom_fields():
-    """Fetch all custom fields and log their details."""
     url = f'{CLIO_API}/custom_fields.json'
     params = {'fields': 'id,name,field_type,picklist_options'}
     custom_fields, _ = fetch_data(url, params)
@@ -382,7 +416,6 @@ def fetch_open_matters_with_custom_fields(paralegal_field_ids, picklist_mappings
         client = matter.get('client') or {}
         client_id = client.get('id')
 
-        # Initialize with all fields
         matter_data = {
             'Matter Number': matter_number,
             'Client ID': client_id,
@@ -452,8 +485,8 @@ def get_billing_cycle_totals(matter_number, billing_data):
 
 def get_current_month_totals():
     current_date = datetime.now()
-    start_date = current_date.replace(day=1).strftime('%Y-%m-%dT00:00:00-08:00')
-    end_date = current_date.strftime('%Y-%m-%dT23:59:59-08:00')
+    start_date = current_date.replace(day=1).strftime(f'%Y-%m-%dT00:00:00{TIMEZONE_OFFSET}')
+    end_date = current_date.strftime(f'%Y-%m-%dT23:59:59{TIMEZONE_OFFSET}')
     billing_data = fetch_billable_hours(start_date, end_date)
     user_totals = {}
     for matter_data in billing_data.values():
@@ -478,30 +511,46 @@ def normalize_name(name):
         return name.strip()
 
 # =========================
-# Build dataframes (ID-based)
+# Build dataframes (matter-grain)
 # =========================
 def process_data():
     print("Fetching matters with balances...")
     matters = fetch_matters_with_balances()
     print(f"Fetched {len(matters)} matters with balances.")
 
-    print("Fetching outstanding balances...")
-    outstanding_balances = fetch_outstanding_balances()
-    print(f"Fetched {len(outstanding_balances)} outstanding balances.")
+    print("Fetching outstanding balances by matter...")
+    outstanding_by_matter_df = fetch_outstanding_by_matter()
+    print(f"Fetched {len(outstanding_by_matter_df)} outstanding matter balances.")
 
-    print("Fetching work progress...")
-    work_progress = fetch_work_progress()
-    print(f"Fetched {len(work_progress)} work progress items.")
+    print("Fetching work progress (unbilled) by matter...")
+    work_progress_df = fetch_work_progress()
+    print(f"Fetched {len(work_progress_df)} work progress matter rows.")
 
     matter_trusts_rows = []
     for m in matters:
-        acct = m.get('account_balances') or []
-        total_balance_amount = 0.0
-        for bal in acct:
+        acct_list = m.get('account_balances') or []
+
+        # Sum **trust** balances only. If nothing labeled trust and exactly one row, fall back to that one.
+        trust_total = 0.0
+        found_trust = False
+        for bal in acct_list:
+            acct = (bal.get('account') or {})
+            name = str(acct.get('name') or '').lower()
+            type_ = str(acct.get('type') or '').lower()
+            is_trust = ('trust' in name) or ('trust' in type_)
             try:
-                total_balance_amount += float((bal or {}).get('balance', 0) or 0)
+                amount = float(bal.get('balance') or 0)
             except Exception:
-                pass
+                amount = 0.0
+            if is_trust:
+                trust_total += amount
+                found_trust = True
+        if not found_trust and len(acct_list) == 1:
+            # conservative fallback
+            try:
+                trust_total = float((acct_list[0] or {}).get('balance') or 0)
+            except Exception:
+                trust_total = 0.0
 
         matter_stage = m.get('matter_stage')
         matter_stage_name = matter_stage.get('name', 'N/A') if isinstance(matter_stage, dict) else 'N/A'
@@ -511,59 +560,42 @@ def process_data():
             'Matter Number': m.get('number') or m.get('display_number') or m.get('id'),
             'Client ID': client.get('id'),
             'Client Name': normalize_name(client.get('name', 'N/A')),
-            'Trust Account Balance': total_balance_amount,
+            'Trust Account Balance': trust_total,
             'Responsible Attorney': (m.get('responsible_attorney') or {}).get('name', 'N/A'),
             'Status': m.get('status', 'N/A'),
             'Matter Stage': matter_stage_name
         })
 
-    outstanding_rows = [{
-        'Client ID': (b.get('contact') or {}).get('id'),
-        'Client Name': normalize_name((b.get('contact') or {}).get('name', 'N/A')),
-        'Outstanding Balance': b.get('total_outstanding_balance', 0) or 0
-    } for b in outstanding_balances if isinstance(b, dict)]
-
-    work_rows = [{
-        'Client ID': (w.get('client') or {}).get('id'),
-        'Client Name': normalize_name((w.get('client') or {}).get('name', 'N/A')),
-        'Unbilled Amount': w.get('unbilled_amount', 0) or 0,
-        'Unbilled Hours': w.get('unbilled_hours', 0) or 0
-    } for w in work_progress if isinstance(w, dict)]
-
     mt_cols = ['Matter Number', 'Client ID', 'Client Name', 'Trust Account Balance', 'Responsible Attorney', 'Status', 'Matter Stage']
-    ocb_cols = ['Client ID', 'Client Name', 'Outstanding Balance']
-    work_cols = ['Client ID', 'Client Name', 'Unbilled Amount', 'Unbilled Hours']
-
     matter_trusts_df = pd.DataFrame(matter_trusts_rows, columns=mt_cols)
-    outstanding_balances_df = pd.DataFrame(outstanding_rows, columns=ocb_cols)
-    work_progress_df = pd.DataFrame(work_rows, columns=work_cols)
+
+    # work_progress_df already has: Matter Number, Client ID/Name, Unbilled Amount/Hours
 
     print("trusts:", matter_trusts_df.shape, list(matter_trusts_df.columns))
-    print("ocb:", outstanding_balances_df.shape, list(outstanding_balances_df.columns))
+    print("ocb_by_matter:", outstanding_by_matter_df.shape, list(outstanding_by_matter_df.columns))
     print("work:", work_progress_df.shape, list(work_progress_df.columns))
 
-    return matter_trusts_df, outstanding_balances_df, work_progress_df
+    return matter_trusts_df, outstanding_by_matter_df, work_progress_df
 
 # =========================
-# Merge and compute
+# Merge and compute (matter-grain)
 # =========================
-def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df, billing_cycle_data, cycle_start_date=None, cycle_end_date=None):
+def merge_dataframes(matter_trusts_df, outstanding_by_matter_df, work_progress_df, billing_cycle_data, cycle_start_date=None, cycle_end_date=None):
     print("Merging dataframes...")
 
-    # Billing window label
     billing_cycle_start = cycle_start_date or "07/16/25"
     billing_cycle_end = cycle_end_date or "07/29/25"
     billing_cycle_column = f"Billing Cycle Hours ({billing_cycle_start} - {billing_cycle_end})"
 
-    # Merge on Client ID
+    # Merge on **Matter Number**; keep Client as attributes
     combined_df = (
         matter_trusts_df
-        .merge(outstanding_balances_df[['Client ID', 'Outstanding Balance']], on='Client ID', how='left')
-        .merge(work_progress_df[['Client ID', 'Unbilled Amount', 'Unbilled Hours']], on='Client ID', how='left')
+        .merge(outstanding_by_matter_df, on='Matter Number', how='left')
+        .merge(work_progress_df[['Matter Number','Unbilled Amount','Unbilled Hours']], on='Matter Number', how='left')
     )
 
     try:
-        # Merge custom fields by Matter Number + Client ID (we return Client ID from fetch_open_matters_with_custom_fields now)
+        # Merge custom fields by Matter Number + Client ID
         custom_fields_df = fetch_open_matters_with_custom_fields(paralegal_field_ids, picklist_mappings, client_notes_id)
         combined_df = pd.merge(
             combined_df,
@@ -588,14 +620,14 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
         if col in combined_df.columns:
             combined_df[col] = pd.to_numeric(combined_df[col], errors='coerce').fillna(0.0)
 
-    # Calculate net trust
+    # Calculate net trust (correct, matter-grain)
     combined_df['Net Trust Account Balance'] = (
         combined_df['Trust Account Balance'] -
         combined_df['Outstanding Balance'] -
         combined_df['Unbilled Amount']
     )
 
-    # Billing totals
+    # Billing totals (per matter)
     combined_df[billing_cycle_column] = combined_df['Matter Number'].apply(
         lambda x: get_billing_cycle_totals(x, billing_cycle_data)['total_hours']
     )
@@ -632,10 +664,8 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
         'PDDs', 'Discovery', 'Judgment Trial', 'Post Judgment'
     ]
 
-    final_columns = display_columns_order + billing_columns + additional_fields
-    final_columns = [c for c in final_columns if c in combined_df.columns]
+    final_columns = [c for c in (display_columns_order + billing_columns + additional_fields) if c in combined_df.columns]
 
-    # Prefer having Client Name populated
     if 'Client Name' in combined_df.columns:
         combined_df['Client Name'] = combined_df['Client Name'].fillna('N/A')
 
@@ -652,10 +682,9 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
                                                         output_file):
     print(f"Applying formatting and saving to {output_file}...")
     
-    # Create Excel writer and save main sheets
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # Add totals row to each DataFrame before saving
-        for df in [previous_cycle_df, mid_cycle_df]:
+        for df, sheet in [(previous_cycle_df, 'Previous Billing Cycle'), (mid_cycle_df, 'Mid Cycle')]:
             time_columns = [col for col in df.columns if 'Cycle Hours' in col]
             totals = df[time_columns].sum(numeric_only=True) if time_columns else pd.Series(dtype=float)
             totals_row = pd.Series('', index=df.columns)
@@ -663,10 +692,7 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
             for col in time_columns:
                 totals_row[col] = totals.get(col, 0.0)
             df_with_totals = pd.concat([df, pd.DataFrame([totals_row])], ignore_index=True)
-            if df is previous_cycle_df:
-                df_with_totals.to_excel(writer, sheet_name='Previous Billing Cycle', index=False)
-            else:
-                df_with_totals.to_excel(writer, sheet_name='Mid Cycle', index=False)
+            df_with_totals.to_excel(writer, sheet_name=sheet, index=False)
         
         # Totals sheet
         mid_cycle_totals = get_user_totals(mid_cycle_data)
@@ -689,10 +715,14 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
     red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
     yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
     green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
-    total_row_fill = PatternFill(start_color='E7E6E6', end_color='E7E6E6', fill_type='solid')  # Gray background for totals row
+    total_row_fill = PatternFill(start_color='E7E6E6', end_color='E7E6E6', fill_type='solid')  # Gray for totals row
     
-    # Define styles
-    currency_style = NamedStyle(name='currency', number_format='$#,##0.00')
+    # Register currency style (avoid duplicate name errors)
+    currency_style_name = 'currency'
+    if currency_style_name not in [ns.name for ns in wb.named_styles]:
+        currency_style = NamedStyle(name=currency_style_name, number_format='$#,##0.00')
+        wb.add_named_style(currency_style)
+
     bold_font = Font(bold=True)
     
     # Format main sheets
@@ -702,17 +732,20 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
         
         net_balance_col = None
         time_cols = []
-        for col_idx, cell in enumerate(ws[1], 1):
-            if cell.value == 'Net Trust Account Balance':
+        header_vals = [c.value for c in ws[1]]
+
+        for col_idx, val in enumerate(header_vals, start=1):
+            if val == 'Net Trust Account Balance':
                 net_balance_col = col_idx
-            if 'Cycle Hours' in str(cell.value):
+            if isinstance(val, str) and 'Cycle Hours' in val:
                 time_cols.append(col_idx)
         
         # Apply formatting (except totals row)
         for row in ws.iter_rows(min_row=2, max_row=last_row-1):
             for col_idx, cell in enumerate(row, 1):
-                if ws[1][col_idx - 1].value in ['Trust Account Balance', 'Outstanding Balance', 'Unbilled Amount', 'Net Trust Account Balance']:
-                    cell.style = currency_style
+                header = header_vals[col_idx-1]
+                if header in ['Trust Account Balance', 'Outstanding Balance', 'Unbilled Amount', 'Net Trust Account Balance']:
+                    cell.style = currency_style_name
             if net_balance_col:
                 net_cell = row[net_balance_col - 1]
                 try:
@@ -728,15 +761,19 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
         
         # Totals row styling
         totals_row = ws[last_row]
-        for cell in totals_row:
+        for idx, cell in enumerate(totals_row, start=1):
             cell.font = bold_font
             cell.fill = total_row_fill
-            if cell.column in time_cols:
+            if idx in time_cols:
                 cell.number_format = '#,##0.00'
         
         # Add table style (excluding totals row)
         table_ref = f"A1:{ws.cell(row=last_row-1, column=ws.max_column).coordinate}"
-        table = Table(displayName=f"{sheet_name.replace(' ', '')}Table", ref=table_ref)
+        # ensure unique table names
+        safe_name = re.sub(r'[^A-Za-z0-9_]', '', f"{sheet_name}Table")
+        if safe_name in [t.displayName for t in ws._tables]:
+            safe_name = f"{safe_name}_{int(time.time())}"
+        table = Table(displayName=safe_name, ref=table_ref)
         style = TableStyleInfo(
             name="TableStyleMedium9",
             showFirstColumn=False,
@@ -747,13 +784,11 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df, mid
         table.tableStyleInfo = style
         ws.add_table(table)
     
-    # (Optional) further formatting for 'Billable Hour Totals' can be added here
-    
     wb.save(output_file)
     print(f"File saved: {output_file}")
 
 # =========================
-# SharePoint upload (unchanged behavior)
+# SharePoint upload (Graph API)
 # =========================
 def upload_to_sharepoint(file_path, file_name):
     TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
@@ -761,7 +796,7 @@ def upload_to_sharepoint(file_path, file_name):
     CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
     SITE_ID = os.getenv("SHAREPOINT_SITE_ID")
     DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID")
-    LIBRARY_PATH = os.getenv("SHAREPOINT_DOC_LIB").strip('"')
+    LIBRARY_PATH = os.getenv("SHAREPOINT_DOC_LIB", "").strip('"')
 
     authority = f"https://login.microsoftonline.com/{TENANT_ID}"
     scopes = ["https://graph.microsoft.com/.default"]
@@ -818,33 +853,36 @@ def ensure_folder(path, headers, site_id, drive_id):
 # Orchestrator
 # =========================
 def fetch_and_process_data():
-    # Billing windows (your adapted ranges)
-    previous_cycle_start = "2025-07-16T00:00:00-08:00"
-    previous_cycle_end   = "2025-07-29T23:59:59-08:00"
+    # Billing windows (adjusted to use configured TZ offset)
+    previous_cycle_start = f"2025-07-16T00:00:00{TIMEZONE_OFFSET}"
+    previous_cycle_end   = f"2025-07-29T23:59:59{TIMEZONE_OFFSET}"
 
-    mid_cycle_start = "2025-07-30T00:00:00-08:00"
-    mid_cycle_end   = "2025-08-12T23:59:59-08:00"
+    mid_cycle_start = f"2025-07-30T00:00:00{TIMEZONE_OFFSET}"
+    mid_cycle_end   = f"2025-08-12T23:59:59{TIMEZONE_OFFSET}"
 
     current_date = datetime.now()
     current_cycle_start = mid_cycle_start
-    current_cycle_end   = current_date.strftime('%Y-%m-%dT23:59:59-08:00')
+    current_cycle_end   = current_date.strftime(f'%Y-%m-%dT23:59:59{TIMEZONE_OFFSET}')
 
-    # Fetch billable hour buckets (with robust backoff/paging)
+    # Fetch billable hour buckets
+    print("Fetching billable hours for previous cycle…")
     previous_cycle_data = fetch_billable_hours(previous_cycle_start, previous_cycle_end)
+    print("Fetching billable hours for mid cycle…")
     mid_cycle_data = fetch_billable_hours(mid_cycle_start, mid_cycle_end)
+    print("Fetching billable hours for running current cycle…")
     current_cycle_data = fetch_billable_hours(current_cycle_start, current_cycle_end)
     
     # Process main data
-    matter_trusts_df, outstanding_balances_df, work_progress_df = process_data()
+    matter_trusts_df, outstanding_by_matter_df, work_progress_df = process_data()
     
-    # Merge/report for both cycles
+    # Merge/report for both cycles (labels purely cosmetic for headers)
     previous_cycle_df = merge_dataframes(
-        matter_trusts_df, outstanding_balances_df, work_progress_df, previous_cycle_data,
+        matter_trusts_df, outstanding_by_matter_df, work_progress_df, previous_cycle_data,
         "07/16/25", "07/29/25"
     )
     mid_cycle_df = merge_dataframes(
-        matter_trusts_df, outstanding_balances_df, work_progress_df, mid_cycle_data,
-        "07/29/25", "08/12/25"
+        matter_trusts_df, outstanding_by_matter_df, work_progress_df, mid_cycle_data,
+        "07/30/25", "08/12/25"
     )
     
     # Save the report
@@ -857,7 +895,7 @@ def fetch_and_process_data():
         mid_cycle_df, 
         mid_cycle_data,
         current_cycle_data,
-        "07/29/25",
+        "07/30/25",
         "08/12/25",
         current_date.strftime("%m/%d/%y"),
         output_file
@@ -879,7 +917,7 @@ if __name__ == '__main__':
         access_token = get_access_token()
         if access_token:
             print("Access token obtained, starting data processing...")
-            
+
             # Fetch custom fields
             custom_fields = fetch_custom_fields() or []
 
@@ -924,9 +962,13 @@ if __name__ == '__main__':
                 for field_name, field_id in paralegal_field_ids.items() if field_id
             }
 
+            # EXPOSE globals used inside merge_dataframes()
+            globals()['paralegal_field_ids'] = paralegal_field_ids
+            globals()['picklist_mappings'] = picklist_mappings
+            globals()['client_notes_id'] = client_notes_id
+
             fetch_and_process_data()
         else:
             print("OAuth flow not seeded. Complete the authorization locally to store tokens in env.")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
-
