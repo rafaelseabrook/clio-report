@@ -1,5 +1,5 @@
 # Generate_TrafficLightReport.py
-# Fixed joins: OCB by Client ID, Unbilled by Matter ID; cycle hours by display_number
+# Correct Net Trust math (ID-joins) + per-user Cycle Hours columns + SharePoint upload
 
 import os
 import re
@@ -333,13 +333,14 @@ def make_report_df(matter_df: pd.DataFrame,
     for c in ["Trust Account Balance","Outstanding Balance","Unbilled Amount","Unbilled Hours"]:
         combined[c] = pd.to_numeric(combined[c], errors="coerce").fillna(0.0)
 
-    # Net per matter
+    # Net per matter (correct)
     combined["Net Trust Account Balance"] = (
         combined["Trust Account Balance"] - combined["Outstanding Balance"] - combined["Unbilled Amount"]
     ).astype(float)
 
-    # Cycle Hours (map by display_number/Matter Number)
-    col_hours = f"Billing Cycle Hours ({cycle_start_label} - {cycle_end_label})"
+    # Cycle Hours total column
+    col_total = f"Billing Cycle Hours ({cycle_start_label} - {cycle_end_label})"
+
     def _cycle_total(dn: str) -> float:
         b = cycle_data.get(dn, {})
         if isinstance(b, dict):
@@ -348,24 +349,58 @@ def make_report_df(matter_df: pd.DataFrame,
             return float(b or 0.0)
         except Exception:
             return 0.0
-    combined[col_hours] = combined["Matter Number"].map(_cycle_total)
+
+    combined[col_total] = combined["Matter Number"].map(_cycle_total)
+
+    # ===== Per-user cycle hour columns (the part you asked for) =====
+    # Gather every user observed in cycle_data
+    users: List[str] = []
+    for dat in cycle_data.values():
+        if isinstance(dat, dict):
+            for u in (dat.get("user_hours") or {}):
+                users.append(u)
+    users = sorted(set(users))
+
+    # Add a column per user with the hours for that matter
+    def _user_hours_for(dn: str, user: str) -> float:
+        dat = cycle_data.get(dn, {})
+        if not isinstance(dat, dict):
+            return 0.0
+        try:
+            return float((dat.get("user_hours") or {}).get(user, 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    for user in users:
+        col_user = f"{user} Cycle Hours ({cycle_start_label} - {cycle_end_label})"
+        combined[col_user] = combined["Matter Number"].map(lambda dn, u=user: _user_hours_for(dn, u))
 
     # Expand custom fields onto columns
     for cf_name in CF_OUTPUT_FIELDS:
         combined[cf_name] = combined["_cf_map"].map(lambda d: (d or {}).get(cf_name, ""))
 
-    # Select / order columns (match your sheet)
+    # Select / order columns (match your sheet; include per-user columns right after total)
     base_cols = [
         "Matter Number","Client Name","CR ID","Net Trust Account Balance","Matter Stage",
-        col_hours,"Responsible Attorney","Main Paralegal","Supporting Attorney","Supporting Paralegal","Client Notes",
+        col_total,  # total cycle hours first
+        # per-user cycle hour columns will be appended in order below:
+    ]
+    # Insert the per-user columns (in the same order we built them)
+    per_user_cols = [f"{u} Cycle Hours ({cycle_start_label} - {cycle_end_label})" for u in users]
+    base_cols += per_user_cols
+    # then the rest of your usual columns
+    base_cols += [
+        "Responsible Attorney","Main Paralegal","Supporting Attorney","Supporting Paralegal","Client Notes",
         "Initial Client Goals","Initial Strategy","Has strategy changed Describe","Current action Items",
         "Hearings","Deadlines","DV situation description","Custody Visitation","CS Add ons Extracurricular",
         "Spousal Support","PDDs","Discovery","Judgment Trial","Post Judgment","collection efforts",
         "Unbilled Hours"
     ]
+
     for c in base_cols:
         if c not in combined.columns:
             combined[c] = ""
+
     out = combined[base_cols].copy()
     out = out.sort_values(by="Net Trust Account Balance", ascending=False, kind="mergesort").reset_index(drop=True)
     return out
@@ -533,22 +568,25 @@ def upload_to_sharepoint(file_path: str, file_name: str) -> None:
     print(f"✅ Uploaded {file_name} to SharePoint at {folder_path}/")
 
 # =========================
-# Orchestrator
+# Helpers
 # =========================
-def iso_range(start_label_mmddyy: str, end_label_mmddyy: str, tz: str = "-08:00") -> Tuple[str, str]:
-    # expects labels like "07/16/25"
+def iso_range_from_labels(start_label_mmddyy: str, end_label_mmddyy: str, tz: str = "-08:00") -> Tuple[str, str]:
+    # expects labels like "05/07/25"
     start = datetime.strptime(start_label_mmddyy, "%m/%d/%y").strftime("%Y-%m-%d")
     end = datetime.strptime(end_label_mmddyy, "%m/%d/%y").strftime("%Y-%m-%d")
     return f"{start}T00:00:00{tz}", f"{end}T23:59:59{tz}"
 
+# =========================
+# Orchestrator
+# =========================
 def fetch_and_process_data() -> None:
-    # Set your two windows (labels for headers + ISO for API)
+    # WINDOWS you care about
     prev_start_lbl, prev_end_lbl = "07/16/25", "07/29/25"
     mid_start_lbl,  mid_end_lbl  = "07/30/25", "08/12/25"
     tz = os.getenv("CLIO_TZ_OFFSET", "-08:00")
 
-    prev_start_iso, prev_end_iso = iso_range(prev_start_lbl, prev_end_lbl, tz)
-    mid_start_iso, mid_end_iso   = iso_range(mid_start_lbl, mid_end_lbl, tz)
+    prev_start_iso, prev_end_iso = iso_range_from_labels(prev_start_lbl, prev_end_lbl, tz)
+    mid_start_iso, mid_end_iso   = iso_range_from_labels(mid_start_lbl, mid_end_lbl, tz)
     current_date = datetime.now()
     current_cycle_start_iso = mid_start_iso
     current_cycle_end_iso   = f"{current_date.strftime('%Y-%m-%d')}T23:59:59{tz}"
@@ -556,12 +594,12 @@ def fetch_and_process_data() -> None:
     # Build base frames once
     matter_df, ocb_df, bill_df = build_base_frames()
 
-    # Cycle hours dicts (with per-user for totals sheet)
+    # Cycle hours dicts (with user breakdown)
     previous_cycle_hours = fetch_billable_hours(prev_start_iso, prev_end_iso)
     mid_cycle_hours      = fetch_billable_hours(mid_start_iso, mid_end_iso)
     current_cycle_hours  = fetch_billable_hours(current_cycle_start_iso, current_cycle_end_iso)
 
-    # Compose sheets (correct joins)
+    # Compose sheets (correct joins + per-user columns)
     previous_cycle_df = make_report_df(matter_df, ocb_df, bill_df, previous_cycle_hours, prev_start_lbl, prev_end_lbl)
     mid_cycle_df      = make_report_df(matter_df, ocb_df, bill_df, mid_cycle_hours,  mid_start_lbl,  mid_end_lbl)
 
@@ -589,7 +627,7 @@ def fetch_and_process_data() -> None:
     print("✅ Done.")
 
 # =========================
-# OAuth callback (if ever used locally)
+# OAuth callback (optional local use)
 # =========================
 @app.route('/callback')
 def callback():
