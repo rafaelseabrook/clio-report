@@ -215,15 +215,15 @@ def fetch_data(url, params):
 # Clio fetchers (limit=50, include IDs)
 # =========================
 def fetch_matters_with_balances():
-    # Request bank_account.type so we can filter to trust if present
+    # First-level fields only; remove second-level nesting that caused 400
     url = f"{CLIO_API}/matters.json"
     params = {
-        'fields': 'id,number,display_number,description,client{id,name},responsible_attorney{name},status,matter_stage{name},account_balances{balance,bank_account{type}}',
+        'fields': 'id,number,display_number,description,client{id,name},responsible_attorney{name},status,matter_stage{name},account_balances{balance}',
         'status': 'open,pending'
     }
     return fetch_data(url, params)[0]
 
-# (Kept for compatibility, but we will not use client-level totals in the merge)
+# (Kept for compatibility / visibility, but not used in merge)
 def fetch_outstanding_balances():
     url = f"{CLIO_API}/outstanding_client_balances.json"
     params = {
@@ -232,22 +232,16 @@ def fetch_outstanding_balances():
     return fetch_data(url, params)[0]
 
 def fetch_work_progress():
-    # Return unbilled *per matter* (preserve your function name/signature)
+    # billable_matters does NOT expose a nested matter field; keep it client-level
     url = f"{CLIO_API}/billable_matters.json"
     params = {
-        'fields': 'unbilled_amount,unbilled_hours,matter{id,number,display_number},client{id,name}'
+        'fields': 'unbilled_amount,unbilled_hours,client{id,name}'
     }
     matters, _ = fetch_data(url, params)
     print(f"Fetched {len(matters)} billable matters.")
-    # Normalize into rows including Matter Number so we can join by matter later
     rows = []
-    for w in matters:
-        m = (w.get('matter') or {})
-        mnum = m.get('number') or m.get('display_number')
-        if not mnum:
-            continue
+    for w in matters or []:
         rows.append({
-            'Matter Number': mnum,
             'Client ID': (w.get('client') or {}).get('id'),
             'Client Name': (w.get('client') or {}).get('name'),
             'Unbilled Amount': w.get('unbilled_amount', 0) or 0,
@@ -317,29 +311,29 @@ def fetch_billable_hours(start_date, end_date):
 
     return matter_totals
 
-# NEW: Outstanding balances per matter (use Bills; sum 'due' > 0)
-def fetch_outstanding_by_matter():
+# Outstanding balances per matter via Bills (plural), using bill 'balance'
+def fetch_outstanding_by_matter_from_bills():
     url = f"{CLIO_API}/bills.json"
     params = {
-        'fields': 'id,state,due,matter{id,number,display_number}',
-        'limit': PAGE_LIMIT
-        # No state filter: we'll sum by actual 'due' value to avoid missing partially paid/overdue nuances
+        'fields': 'id,state,balance,matters{number,display_number}'
     }
     bills, _ = fetch_data(url, params)
-    out = {}
-    for b in bills:
-        m = (b.get('matter') or {})
-        mnum = m.get('number') or m.get('display_number')
-        if not mnum:
+    by_matter = {}
+    for b in bills or []:
+        state = (b.get('state') or '').lower()
+        if state in ('paid', 'void'):
             continue
         try:
-            due = float(b.get('due') or 0)
+            bal = float(b.get('balance') or 0.0)
         except Exception:
-            due = 0.0
-        if due > 0:
-            out[mnum] = out.get(mnum, 0.0) + due
-    print(f"Computed outstanding-by-matter for {len(out)} matters from Bills.")
-    return out
+            bal = 0.0
+        for m in (b.get('matters') or []):
+            mnum = m.get('number') or m.get('display_number')
+            if not mnum:
+                continue
+            by_matter[mnum] = by_matter.get(mnum, 0.0) + bal
+    print(f"Computed outstanding-by-matter for {len(by_matter)} matters from Bills.")
+    return by_matter
 
 # =========================
 # Custom Fields (returns Client ID too)
@@ -527,7 +521,6 @@ def process_data():
     print(f"Fetched {len(matters)} matters with balances.")
 
     print("Fetching outstanding balances...")
-    # (Kept for logging parity; we now compute per-matter via Bills)
     _client_outstanding = fetch_outstanding_balances()
     print(f"Fetched {len(_client_outstanding)} outstanding balances (client-level; not used in merge).")
 
@@ -536,24 +529,16 @@ def process_data():
     print(f"Fetched {len(work_progress)} work progress items.")
 
     print("Computing outstanding by matter from Bills...")
-    outstanding_by_matter = fetch_outstanding_by_matter()
+    outstanding_by_matter = fetch_outstanding_by_matter_from_bills()
 
     matter_trusts_rows = []
-    for m in matters:
+    for m in matters or []:
         acct = m.get('account_balances') or []
         total_trust_balance = 0.0
-
-        # If bank_account.type is present, only take 'trust'
         for bal in acct:
             try:
-                acct_type = ((bal or {}).get('bank_account') or {}).get('type')
                 amount = float((bal or {}).get('balance', 0) or 0)
-                if acct_type is None:
-                    # If type not present, fallback to accumulating (legacy behavior)
-                    total_trust_balance += amount
-                else:
-                    if str(acct_type).lower() == 'trust':
-                        total_trust_balance += amount
+                total_trust_balance += amount
             except Exception:
                 pass
 
@@ -575,8 +560,8 @@ def process_data():
     mt_cols = ['Matter Number', 'Client ID', 'Client Name', 'Trust Account Balance', 'Responsible Attorney', 'Status', 'Matter Stage']
     matter_trusts_df = pd.DataFrame(matter_trusts_rows, columns=mt_cols)
 
-    # Work progress -> already matter-level in fetch_work_progress()
-    work_cols = ['Matter Number', 'Client ID', 'Client Name', 'Unbilled Amount', 'Unbilled Hours']
+    # Work progress -> client-level
+    work_cols = ['Client ID', 'Client Name', 'Unbilled Amount', 'Unbilled Hours']
     work_progress_df = pd.DataFrame(work_progress, columns=work_cols) if work_progress else pd.DataFrame(columns=work_cols)
 
     # Outstanding by matter -> dataframe
@@ -588,7 +573,7 @@ def process_data():
 
     print("trusts:", matter_trusts_df.shape, list(matter_trusts_df.columns))
     print("ocb (by matter):", outstanding_balances_df.shape, list(outstanding_balances_df.columns))
-    print("work:", work_progress_df.shape, list(work_progress_df.columns))
+    print("work (client-level):", work_progress_df.shape, list(work_progress_df.columns))
 
     return matter_trusts_df, outstanding_balances_df, work_progress_df
 
@@ -603,15 +588,15 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
     billing_cycle_end = cycle_end_date or "07/29/25"
     billing_cycle_column = f"Billing Cycle Hours ({billing_cycle_start} - {billing_cycle_end})"
 
-    # Merge by Matter Number (avoid client-level over-subtraction)
+    # Merge: outstanding by Matter Number; unbilled by Client ID
     combined_df = (
         matter_trusts_df
-        .merge(outstanding_balances_df, on='Matter Number', how='left')  # 'Outstanding Balance'
-        .merge(work_progress_df[['Matter Number', 'Unbilled Amount', 'Unbilled Hours']], on='Matter Number', how='left')
+        .merge(outstanding_balances_df[['Matter Number', 'Outstanding Balance']], on='Matter Number', how='left')
+        .merge(work_progress_df[['Client ID', 'Unbilled Amount', 'Unbilled Hours']], on='Client ID', how='left')
     )
 
     try:
-        # Merge custom fields by Matter Number + Client ID (unchanged)
+        # Merge custom fields by Matter Number + Client ID
         custom_fields_df = fetch_open_matters_with_custom_fields(paralegal_field_ids, picklist_mappings, client_notes_id)
         combined_df = pd.merge(
             combined_df,
@@ -636,7 +621,7 @@ def merge_dataframes(matter_trusts_df, outstanding_balances_df, work_progress_df
         if col in combined_df.columns:
             combined_df[col] = pd.to_numeric(combined_df[col], errors='coerce').fillna(0.0)
 
-    # Calculate net trust (now correctly per matter)
+    # Calculate net trust
     combined_df['Net Trust Account Balance'] = (
         combined_df['Trust Account Balance'] -
         combined_df['Outstanding Balance'] -
