@@ -24,7 +24,7 @@ app = Flask(__name__)
 CLIO_BASE = os.getenv("CLIO_BASE", "https://app.clio.com")
 API_VERSION = "4"
 CLIO_API = f"{CLIO_BASE}/api/v{API_VERSION}"
-CLIO_TOKEN_URL = f"{CLIO_BASE}/oauth/token}"
+CLIO_TOKEN_URL = f"{CLIO_BASE}/oauth/token"
 
 # Clio OAuth (tokens are expected to be pre-seeded in env on Render)
 CLIENT_ID = os.getenv("CLIO_CLIENT_ID")
