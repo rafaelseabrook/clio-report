@@ -583,8 +583,8 @@ def iso_range_from_labels(start_label_mmddyy: str, end_label_mmddyy: str, tz: st
 # =========================
 def fetch_and_process_data() -> None:
     # WINDOWS you care about
-    prev_start_lbl, prev_end_lbl = "09/24/25", "10/07/25"
-    mid_start_lbl,  mid_end_lbl  = "10/08/25", "10/21/25"
+    prev_start_lbl, prev_end_lbl = "10/08/25", "10/21/25"
+    mid_start_lbl,  mid_end_lbl  = "10/22/25", "11/03/25"
     tz = os.getenv("CLIO_TZ_OFFSET", "-08:00")
 
     prev_start_iso, prev_end_iso = iso_range_from_labels(prev_start_lbl, prev_end_lbl, tz)
