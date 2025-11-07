@@ -518,7 +518,7 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
         ws.add_table(table)
 
     wb.save(output_file)
-    print(f"✅ File saved: {output_file}")
+    print(f" File saved: {output_file}")
 
 # =========================
 # SharePoint upload
@@ -567,7 +567,7 @@ def upload_to_sharepoint(file_path: str, file_name: str) -> None:
         res = requests.put(upload_url, headers={"Authorization": headers["Authorization"]}, data=f)
     if res.status_code not in (200, 201):
         raise Exception(f"Upload failed: {res.status_code} - {res.text[:200]}")
-    print(f"✅ Uploaded {file_name} to SharePoint at {folder_path}/")
+    print(f" Uploaded {file_name} to SharePoint at {folder_path}/")
 
 # =========================
 # Helpers
@@ -583,8 +583,8 @@ def iso_range_from_labels(start_label_mmddyy: str, end_label_mmddyy: str, tz: st
 # =========================
 def fetch_and_process_data() -> None:
     # WINDOWS you care about
-    prev_start_lbl, prev_end_lbl = "10/08/25", "10/21/25"
-    mid_start_lbl,  mid_end_lbl  = "10/22/25", "11/03/25"
+    prev_start_lbl, prev_end_lbl = "10/22/25", "11/03/25"
+    mid_start_lbl,  mid_end_lbl  = "11/04/25", "11/16/25"
     tz = os.getenv("CLIO_TZ_OFFSET", "-08:00")
 
     prev_start_iso, prev_end_iso = iso_range_from_labels(prev_start_lbl, prev_end_lbl, tz)
@@ -626,7 +626,7 @@ def fetch_and_process_data() -> None:
         os.remove(output_file)
     except Exception:
         pass
-    print("✅ Done.")
+    print(" Done.")
 
 # =========================
 # OAuth callback (optional local use)
