@@ -10,7 +10,7 @@ from datetime import datetime
 from urllib.parse import quote
 from flask import Flask, request
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, NamedStyle, Font
+from openpyxl.styles import PatternFill, NamedStyle, Font, Alignment
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 import msal
@@ -487,6 +487,12 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
             for col_idx in range(1, ws.max_column + 1):
                 col_letter = get_column_letter(col_idx)
                 ws.column_dimensions[col_letter].width = 15
+        except Exception:
+            pass
+        # Ensure header cells wrap text and are vertically centered
+        try:
+            for cell in ws[1]:
+                cell.alignment = Alignment(wrap_text=True, vertical='center')
         except Exception:
             pass
         last_row = ws.max_row
