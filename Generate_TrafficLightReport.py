@@ -491,10 +491,11 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
             ws.freeze_panes = 'A2'
         except Exception:
             pass
-        # Ensure header cells wrap text and are vertically centered
+        # Ensure header cells wrap text, are vertically centered, and use white font
         try:
             for cell in ws[1]:
                 cell.alignment = Alignment(wrap_text=True, vertical='center')
+                cell.font = Font(color='FFFFFF')
         except Exception:
             pass
         last_row = ws.max_row
