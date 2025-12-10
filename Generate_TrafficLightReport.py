@@ -481,12 +481,14 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
 
     for sheet_name in ['Previous Billing Cycle', 'Mid Cycle']:
         ws = wb[sheet_name]
-        # Set header row height and column widths: header row height 80, each column width 15
+        # Set header row height and column widths: header row height 120, each column width 15
         try:
-            ws.row_dimensions[1].height = 80
+            ws.row_dimensions[1].height = 120
             for col_idx in range(1, ws.max_column + 1):
                 col_letter = get_column_letter(col_idx)
                 ws.column_dimensions[col_letter].width = 15
+            # Freeze the header row so row 1 stays visible
+            ws.freeze_panes = 'A2'
         except Exception:
             pass
         # Ensure header cells wrap text and are vertically centered
