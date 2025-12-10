@@ -12,6 +12,7 @@ from flask import Flask, request
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, NamedStyle, Font
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils import get_column_letter
 import msal
 from typing import Optional, Dict, Any, List, Tuple, Union
 
@@ -480,6 +481,14 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
 
     for sheet_name in ['Previous Billing Cycle', 'Mid Cycle']:
         ws = wb[sheet_name]
+        # Set header row height and column widths: header row height 80, each column width 15
+        try:
+            ws.row_dimensions[1].height = 80
+            for col_idx in range(1, ws.max_column + 1):
+                col_letter = get_column_letter(col_idx)
+                ws.column_dimensions[col_letter].width = 15
+        except Exception:
+            pass
         last_row = ws.max_row
         net_balance_col = None
         time_cols: List[int] = []
