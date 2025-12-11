@@ -247,7 +247,7 @@ CF_OUTPUT_FIELDS = [
     "Child Support: Temporary Orders Needed? State Current Order",
     "PDDs: Status of PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
     "Parentage / Dissolution of Marriage / Legal Separation:",
-    "Judgment: Has a Judgement Been Entered? Please Specify","collection efforts"
+    "Judgment: Has a Judgement Been Entered? Please Specify"
 ]
 
 def _resolve_cf(cf: Dict[str, Any], meta_by_name: Dict[str, Dict[str, Any]]) -> str:
@@ -404,7 +404,7 @@ def make_report_df(matter_df: pd.DataFrame,
         "Child Support: Temporary Orders Needed? State Current Order",
         "PDDs: Status of PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
         "Parentage / Dissolution of Marriage / Legal Separation:",
-        "Judgment: Has a Judgement Been Entered? Please Specify","collection efforts"
+        "Judgment: Has a Judgement Been Entered? Please Specify"
     ]
     # Unbilled Hours comes from billable_matters API, not custom fields
     base_cols.append("Unbilled Hours")
