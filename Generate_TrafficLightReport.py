@@ -240,15 +240,14 @@ def fetch_billable_hours(start_iso: str, end_iso: str) -> Dict[str, Any]:
 # =========================
 CF_OUTPUT_FIELDS = [
     "CR ID","Main Paralegal","Supporting Attorney","Supporting Paralegal",
-    "Initial Client Goals","Initial Strategy","Has strategy changed Describe","Detailed List of Issues in the Case",
+    "Client Goals","Strategy","Has strategy changed Describe","Detailed List of Issues in the Case",
     "Strategy to Resolve Issues in the Case","Current action Items","Client Notes",
-    "All Hearings on Calendar","All Deadlines on Calendar","DV situation description (DVRO: Attorney Action Required? Please Describe)",
-    "Child Custody and Child Visitation (Timeshare): Temporary Orders Needed? State Current Order",
-    "CS Add ons Extracurricular. Child Support: Temporary Orders Needed? State Current Order",
-    "Spousal Support: Temporary Orders Needed? State Current Order",
-    "Preliminary Declaration of Disclosures: Status of Client's PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
-    "Parentage / Dissolution of Marriage / Legal Separation: Please Identify",
-    "Judgment: Has a Judgement Been Entered? Please Specify","collection efforts"
+    "All Hearings on Calendar","All Deadlines on Calendar","DVRO: Attorney Action Required? Please Describe",
+    "Custody & Visitation: Temp Orders Needed? State Current Order",
+    "Child Support: Temporary Orders Needed? State Current Order",
+    "PDDs: Status of PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
+    "Parentage / Dissolution of Marriage / Legal Separation:",
+    "Judgment: Has a Judgement Been Entered? Please Specify","collection efforts","Unbilled Hours"
 ]
 
 def _resolve_cf(cf: Dict[str, Any], meta_by_name: Dict[str, Dict[str, Any]]) -> str:
@@ -387,7 +386,6 @@ def make_report_df(matter_df: pd.DataFrame,
         combined[cf_name] = combined["_cf_map"].map(lambda d: (d or {}).get(cf_name, ""))
 
     # Select / order columns (match your sheet; include per-user columns right after total)
-    # Select / order columns (match your sheet; Client Notes moves to after custom fields)
     base_cols = [
         "Matter Number","Client Name","CR ID","Net Trust Account Balance","Matter Stage",
         "Responsible Attorney","Main Paralegal","Supporting Attorney","Supporting Paralegal",
@@ -397,16 +395,15 @@ def make_report_df(matter_df: pd.DataFrame,
     # then append the per-user cycle hour columns
     per_user_cols = [f"{u} Cycle Hours ({cycle_start_label} - {cycle_end_label})" for u in users]
     base_cols += per_user_cols
-    # followed by the custom fields (in new order with renames and new empty columns)
+    # followed by the custom fields (in new order matching renamed Clio fields)
     base_cols += [
-        "Initial Client Goals","Initial Strategy","Has strategy changed Describe","Detailed List of Issues in the Case",
+        "Client Goals","Strategy","Has strategy changed Describe","Detailed List of Issues in the Case",
         "Strategy to Resolve Issues in the Case","Current action Items","Client Notes",
-        "All Hearings on Calendar","All Deadlines on Calendar","DV situation description (DVRO: Attorney Action Required? Please Describe)",
-        "Child Custody and Child Visitation (Timeshare): Temporary Orders Needed? State Current Order",
-        "CS Add ons Extracurricular. Child Support: Temporary Orders Needed? State Current Order",
-        "Spousal Support: Temporary Orders Needed? State Current Order",
-        "Preliminary Declaration of Disclosures: Status of Client's PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
-        "Parentage / Dissolution of Marriage / Legal Separation: Please Identify",
+        "All Hearings on Calendar","All Deadlines on Calendar","DVRO: Attorney Action Required? Please Describe",
+        "Custody & Visitation: Temp Orders Needed? State Current Order",
+        "Child Support: Temporary Orders Needed? State Current Order",
+        "PDDs: Status of PDDs and OPPs PDDs","Formal Discovery: Outline Discovery Strategy",
+        "Parentage / Dissolution of Marriage / Legal Separation:",
         "Judgment: Has a Judgement Been Entered? Please Specify","collection efforts",
         "Unbilled Hours"
     ]
