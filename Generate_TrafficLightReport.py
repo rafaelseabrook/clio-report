@@ -516,7 +516,7 @@ def apply_conditional_and_currency_formatting_with_totals(previous_cycle_df: pd.
                     val = float(net_cell.value or 0)
                     if val <= 0:
                         net_cell.fill = red_fill
-                    elif 0 < val < 1000:
+                    elif 0 < val <= 2000:
                         net_cell.fill = yellow_fill
                     else:
                         net_cell.fill = green_fill
